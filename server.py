@@ -127,6 +127,47 @@ async def say(text: str) -> str:
 
 
 @mcp.tool()
+async def transmit_audio(audio_base64: str, format: str = "wav") -> str:
+    """
+    Transmit pre-synthesized audio over the EchoLink connection.
+
+    Use this when the caller has already synthesized speech (e.g. Pneum.ai's own
+    voice engine) and wants to send it directly to the radio without going through
+    a separate TTS step.
+
+    Args:
+        audio_base64: Base64-encoded audio data
+        format: Audio format — "wav", "mp3", or "pcm_8k" (raw 8kHz 16-bit mono)
+    """
+    if not _proxy.is_connected:
+        return "Not connected. Call connect() first."
+
+    import base64
+    from echolink.codec import mp3_to_pcm_8k
+
+    raw = base64.b64decode(audio_base64)
+
+    if format == "pcm_8k":
+        pcm = raw
+    elif format == "mp3":
+        pcm = mp3_to_pcm_8k(raw)
+    elif format == "wav":
+        # Strip 44-byte WAV header to get raw PCM, then resample if needed
+        import subprocess
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-i", "pipe:0", "-f", "s16le", "-ar", "8000", "-ac", "1", "pipe:1"],
+            input=raw, capture_output=True, check=True,
+        )
+        pcm = result.stdout
+    else:
+        return f"Unknown format {format!r}. Use 'wav', 'mp3', or 'pcm_8k'."
+
+    await _proxy.send_pcm(pcm)
+    duration_s = len(pcm) / (8000 * 2)
+    return f"Transmitted {duration_s:.1f}s of audio."
+
+
+@mcp.tool()
 async def listen(timeout_seconds: float = 8.0) -> str:
     """
     Receive audio from the connected station and return the transcription.

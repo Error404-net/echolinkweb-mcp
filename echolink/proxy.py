@@ -48,7 +48,7 @@ class EchoLinkProxy:
 
     @property
     def is_connected(self) -> bool:
-        return self._ws is not None and not self._ws.closed
+        return self._connected_callsign is not None
 
     @property
     def connected_callsign(self) -> str | None:
@@ -70,6 +70,17 @@ class EchoLinkProxy:
 
         if result.get("success"):
             self._proxy_handle = result["proxyHandle"]
+            # Open WebSocket immediately after login (required before any connect call)
+            ws_url = WS_URL_TEMPLATE.format(self._proxy_handle)
+            self._ws = await self._session.ws_connect(ws_url, heartbeat=20)
+            self._rx_task = asyncio.create_task(self._receive_loop())
+            # Declare audio format to proxy
+            await self._api("setClientParams", {
+                "proxyHandle": self._proxy_handle,
+                "playbackSampleRate": 8000,
+                "recordSampleRate": 8000,
+                "playbackEncoding": "PCM",
+            })
         return result
 
     async def connect(self, remote_callsign: str) -> dict:
@@ -79,30 +90,21 @@ class EchoLinkProxy:
 
         result = await self._api("connect", {
             "remoteCallsign": remote_callsign.upper(),
-            "myName": "",
+            "myName": "webapp.echolink.org",
             "proxyHandle": self._proxy_handle,
             "acceptingIncoming": False,
         })
 
         if result.get("success"):
             self._connected_callsign = remote_callsign.upper()
-            ws_url = WS_URL_TEMPLATE.format(self._proxy_handle)
-            self._ws = await self._session.ws_connect(ws_url, heartbeat=20)
             self._rx_buffer.clear()
-            self._rx_task = asyncio.create_task(self._receive_loop())
 
         return result
 
     async def disconnect(self) -> dict:
-        """Disconnect from the current station."""
-        if self._rx_task:
-            self._rx_task.cancel()
-            self._rx_task = None
-
-        if self._ws and not self._ws.closed:
-            await self._ws.close()
-        self._ws = None
+        """Disconnect from the current station (WebSocket stays open for re-use)."""
         self._connected_callsign = None
+        self._rx_buffer.clear()
 
         result = {}
         if self.is_logged_in:
@@ -115,6 +117,14 @@ class EchoLinkProxy:
     async def logout(self) -> dict:
         """Log out and release resources."""
         await self.disconnect()
+
+        if self._rx_task:
+            self._rx_task.cancel()
+            self._rx_task = None
+
+        if self._ws and not self._ws.closed:
+            await self._ws.close()
+        self._ws = None
 
         result = {}
         if self.is_logged_in:
@@ -132,33 +142,42 @@ class EchoLinkProxy:
         if not self.is_logged_in:
             raise RuntimeError("Call login() first")
 
-        result = await self._api("getStationList", {
-            "proxyHandle": self._proxy_handle,
-            "format": "jquery",
-        })
+        result = await self._api("getStationList", {"proxyHandle": self._proxy_handle})
 
         if not result.get("success"):
             return []
 
         stations = []
-        for group in result.get("stations", {}).values():
-            for s in group.values():
-                if isinstance(s, dict) and s.get("callsign"):
+        # Response: {"structured": [{"Category": [station, ...]}, ...]}
+        # Each station is a dict with callsign/location/nodeNum, OR a plain string callsign.
+        for category_item in result.get("structured", []):
+            for cat_name, entries in category_item.items():
+                if isinstance(entries, str):
+                    # e.g. {"Test Server": "*ECHOTEST*"}
                     stations.append({
-                        "callsign": s.get("callsign", ""),
-                        "location": s.get("location", ""),
-                        "status": s.get("status", ""),
-                        "node_number": s.get("nodeNum", ""),
+                        "callsign": entries,
+                        "location": cat_name,
+                        "status": "online",
+                        "node_number": "",
                     })
+                elif isinstance(entries, list):
+                    for s in entries:
+                        if isinstance(s, dict) and s.get("callsign"):
+                            stations.append({
+                                "callsign": s.get("callsign", ""),
+                                "location": s.get("location", ""),
+                                "status": s.get("status", "online"),
+                                "node_number": s.get("nodeNum", ""),
+                            })
         return stations
 
     async def find_station(self, query: str) -> list[dict]:
         """Search online stations by callsign prefix or node number."""
         all_stations = await self.get_station_list()
-        q = query.upper().strip()
+        q = query.upper().strip("*")
         return [
             s for s in all_stations
-            if q in s.get("callsign", "").upper()
+            if q in s.get("callsign", "").upper().strip("*")
             or str(s.get("node_number", "")) == q
         ]
 

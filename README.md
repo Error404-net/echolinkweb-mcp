@@ -11,20 +11,39 @@ An AI can connect to the EchoLink network, transmit speech (TTS), and receive/tr
 
 - **Licensed amateur radio callsign** with an EchoLink account — [register at echolink.org](https://www.echolink.org/registration.jsp)
 - Python 3.12+
-- ffmpeg (for GSM-FR audio codec)
-- An API key for your chosen TTS/STT backend (default: OpenAI)
-
-```
-brew install ffmpeg        # macOS
-sudo apt install ffmpeg    # Linux
-```
+- ffmpeg
+- An API key for your TTS/STT backend (default: OpenAI)
 
 ## Setup
 
+### Linux (Ubuntu/Debian server)
+
 ```bash
+# System dependencies
+sudo apt update
+sudo apt install -y python3 python3-pip python3-venv ffmpeg git
+
+# Clone and install
+git clone https://github.com/yourusername/echolinkweb-mcp.git
+cd echolinkweb-mcp
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
+
+# Configure credentials
 cp .env.example .env
-# Edit .env with your callsign, password, and API keys
+nano .env   # fill in ECHOLINK_CALLSIGN, ECHOLINK_PASSWORD, OPENAI_API_KEY
+```
+
+### macOS
+
+```bash
+brew install ffmpeg python@3.12 git
+git clone https://github.com/yourusername/echolinkweb-mcp.git
+cd echolinkweb-mcp
+pip3 install -r requirements.txt
+cp .env.example .env
+# Edit .env with your credentials
 ```
 
 ## Configuration
@@ -39,9 +58,9 @@ All credentials are environment variables — never hardcoded.
 | `STT_BACKEND` | No | `openai` | `openai` \| `whisper_local` |
 | `OPENAI_API_KEY` | If using openai | — | OpenAI API key |
 | `ELEVENLABS_API_KEY` | If TTS=elevenlabs | — | ElevenLabs key |
-| `TTS_VOICE` | No | `alloy` | Voice name for TTS |
-| `ECHOLINK_SERVER` | No | `naeast.echolink.org` | Directory server |
-| `ECHOLINK_PORT` | No | `5200` | Directory server port |
+| `TTS_VOICE` | No | `alloy` | Voice name for TTS (OpenAI: alloy, echo, fable, onyx, nova, shimmer) |
+| `MCP_PORT` | No | `8765` | Port for HTTP/SSE server (`run_http.py`) |
+| `MCP_HOST` | No | `0.0.0.0` | Bind host for HTTP/SSE server |
 
 ## Running
 
@@ -59,7 +78,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 {
   "mcpServers": {
     "echolink": {
-      "command": "python",
+      "command": "python3",
       "args": ["/path/to/echolinkweb-mcp/server.py"],
       "env": {
         "ECHOLINK_CALLSIGN": "W6ABC",
@@ -74,7 +93,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 ### With Claude Code
 
 ```bash
-claude mcp add echolink -- python /path/to/echolinkweb-mcp/server.py
+claude mcp add echolink -- python3 /path/to/echolinkweb-mcp/server.py
 ```
 
 Then set credentials:
@@ -84,53 +103,90 @@ export ECHOLINK_PASSWORD=your_password
 export OPENAI_API_KEY=sk-...
 ```
 
+### Pneum.ai (HTTP/SSE mode)
+
+This is the recommended path for running EchoLink via a voice AI agent. The MCP server runs as an HTTP service that Pneum.ai connects to remotely.
+
+**Step 1 — Start the HTTP server on your Linux/Mac machine:**
+
+```bash
+# If using a venv (Linux):
+source .venv/bin/activate
+
+python3 run_http.py
+# Starts on http://0.0.0.0:8765/sse by default
+# Custom port: python3 run_http.py --port 9000
+```
+
+Find your server's IP with `hostname -I` (Linux) or `ipconfig getifaddr en0` (macOS). The MCP endpoint is:
+
+```
+http://YOUR_SERVER_IP:8765/sse
+```
+
+If running on a remote/cloud server, make sure port 8765 is open in your firewall/security group.
+
+**Step 2 — Register in Pneum.ai Tools Studio (Part A: agent control):**
+
+1. Open [Pneum.ai](https://pneum.ai) → **Tools Studio → Custom Tools → MCP Tool**
+2. Set **Server URL** to `http://YOUR_SERVER_IP:8765/sse`
+3. Enable these tools: `connect`, `say`, `transmit_audio`, `listen`, `disconnect`, `find_station`, `status`
+4. Save — your Pneum.ai agent can now search EchoLink stations, connect, and talk on air
+
+**Step 3 — Use Pneum.ai's own voice on air (Part B: bypass `say`):**
+
+If you want Pneum.ai's Voice Studio voice to be what goes out over the radio (instead of OpenAI/ElevenLabs), instruct the agent to use `transmit_audio` instead of `say`:
+
+1. Pneum.ai synthesizes speech with its voice engine
+2. Base64-encodes the audio
+3. Calls `transmit_audio(audio_base64=..., format="wav")` — that audio plays live on the radio
+
+This gives you Pneum.ai's voice directly on EchoLink with no second TTS round-trip. Both `say` (text-in) and `transmit_audio` (audio-in) are available — the agent can choose per-transmission.
+
 ## MCP Tools
 
 | Tool | Description |
 |------|-------------|
-| `find_node(query)` | Search EchoLink directory by callsign or node number |
-| `connect(node_number)` | Connect to a node (use 9999 for EchoTest) |
-| `disconnect()` | Disconnect from current node |
+| `find_station(query)` | Search online EchoLink stations by callsign prefix |
+| `connect(callsign)` | Connect to a station (e.g. `*ECHOTEST*` for loopback test) |
+| `disconnect()` | Disconnect from current station |
 | `say(text)` | TTS → transmit speech on the radio |
+| `transmit_audio(audio_base64, format)` | Send pre-synthesized audio directly (wav/mp3/pcm_8k) |
 | `listen(timeout_seconds)` | Receive audio → STT → return transcription |
-| `status()` | Current connection state |
+| `status()` | Current connection and config state |
 
 ## Testing with EchoTest
 
-EchoTest (node 9999) is the official EchoLink loopback — it records your transmission and plays it back. Use it to verify the full audio pipeline without connecting to a live station.
-
-Example AI conversation flow:
-```
-find_node("9999")          → confirms EchoTest is available
-connect(9999)              → establishes audio link
-say("Hello, EchoTest")     → TTS synthesized and transmitted
-listen(12)                 → waits for echo, returns transcription
-disconnect()               → closes the link
-```
-
-## Audio Pipeline
+`*ECHOTEST*` is the official EchoLink loopback node — it records your transmission and plays it back. Use it to verify the full audio pipeline without connecting to a live station.
 
 ```
-AI text → TTS backend → MP3/PCM → resample 8kHz → GSM-FR encode → RTP/UDP → EchoLink
-EchoLink → RTP/UDP → GSM-FR decode → PCM 8kHz → WAV → STT backend → AI text
+find_station("ECHOTEST")   → confirm it's online
+connect("*ECHOTEST*")      → establish link
+say("Hello EchoTest")      → TTS synthesized and transmitted
+listen(12)                 → wait for echo, returns transcription
+disconnect()               → close the link
 ```
 
-**Codec**: GSM-FR (GSM 06.10, 13.2 kbit/s) via ffmpeg — the native EchoLink codec.  
-**Network**: UDP port 5198, bidirectional peer-to-peer.  
-**Authentication**: TCP challenge-response with MD5 to EchoLink directory server.
+## Architecture
 
-## Protocol Notes
+```
+AI ──MCP tools──► server.py (FastMCP)
+                       │
+               echolink/proxy.py
+               (JSON API + WebSocket)
+                       │
+         webapp.echolink.org/ProxyServlet
+                       │
+              EchoLink network
+```
 
-The EchoLink protocol is not officially documented by the EchoLink organization. This implementation is based on:
-- [SvxLink EchoLink Proxy Protocol](http://www.svxlink.org/doc/echolink_proxy_protocol.html)
-- [MicroLink](https://github.com/brucemack/microlink) — C++ open-source implementation
-- [OpenELP](https://github.com/cottsay/openelp) — open-source EchoLink proxy
+**Auth & control**: `POST https://webapp.echolink.org/ProxyServlet` (JSON)  
+**Audio**: `wss://webapp.echolink.org/websocket/{proxyHandle}` (binary PCM frames)  
+**No raw EchoLink protocol needed** — the webapp backend handles authentication, NAT traversal, and codec conversion server-side.
 
-Some packet formats (particularly the connection handshake) are marked with `# ponytail: verify` comments in the source and may need adjustment after testing against a live EchoLink connection. File an issue or PR if you capture the correct format.
-
-## Directory Server Compatibility
-
-The node list parsing in `echolink/directory.py` (`_parse_node_list`) is a best-effort CSV parser against the echolink.org response format. If the format differs from what's expected, update the parser and open a PR with the actual response sample.
+**Audio pipeline**:
+- Outgoing: `say(text)` → TTS API → MP3 → ffmpeg → 8kHz PCM → WebSocket → EchoLink
+- Incoming: EchoLink → WebSocket → 8kHz PCM → WAV → STT API → text
 
 ## License
 
@@ -139,4 +195,3 @@ MIT. Ham radio, keep the spirit of sharing.
 ---
 
 Built by [ERROR404.NET](https://error404.net).
-`!ignore → return "404: Message not found"`
