@@ -145,11 +145,19 @@ This gives you Pneum.ai's voice directly on EchoLink with no second TTS round-tr
 
 ### Running via Docker
 
-A `Dockerfile` and `docker-compose.yml` are included to run the HTTP/SSE server (`run_http.py`) as a persistent container:
+A `Dockerfile` and `docker-compose.yml` are included to run the HTTP/SSE server (`run_http.py`) as a persistent container. The Dockerfile clones this repo from GitHub at build time (`REPO_URL`/`REPO_REF` build args, default `main`) — it doesn't need a local checkout to build, just an `.env` file alongside it for credentials:
 
 ```bash
 cp .env.example .env   # fill in ECHOLINK_CALLSIGN, ECHOLINK_PASSWORD, OPENAI_API_KEY
 docker compose up -d --build
+```
+
+To build from a fork or a different branch/tag:
+
+```bash
+docker build --build-arg REPO_URL=https://github.com/yourfork/echolinkweb-mcp.git \
+              --build-arg REPO_REF=your-branch \
+              -t echolinkweb-mcp .
 ```
 
 This serves the MCP endpoint at `http://<host>:8765/sse` — register that URL under Pneum.ai's **Tools Studio → Custom Tools → MCP Tool** path (Step 2 above), the same as running it with a venv.
