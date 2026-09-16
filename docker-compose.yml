@@ -1,0 +1,9 @@
+services:
+  echolink-mcp:
+    build: .
+    image: echolinkweb-mcp:latest
+    restart: unless-stopped
+    ports:
+      - "${MCP_PORT:-8765}:8765"
+    env_file:
+      - .env

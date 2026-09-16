@@ -143,6 +143,19 @@ If you want Pneum.ai's Voice Studio voice to be what goes out over the radio (in
 
 This gives you Pneum.ai's voice directly on EchoLink with no second TTS round-trip. Both `say` (text-in) and `transmit_audio` (audio-in) are available — the agent can choose per-transmission.
 
+### Running via Docker
+
+A `Dockerfile` and `docker-compose.yml` are included to run the HTTP/SSE server (`run_http.py`) as a persistent container:
+
+```bash
+cp .env.example .env   # fill in ECHOLINK_CALLSIGN, ECHOLINK_PASSWORD, OPENAI_API_KEY
+docker compose up -d --build
+```
+
+This serves the MCP endpoint at `http://<host>:8765/sse` — register that URL under Pneum.ai's **Tools Studio → Custom Tools → MCP Tool** path (Step 2 above), the same as running it with a venv.
+
+**Note on Pneum.ai's "Custom Tool" container form** (per-invocation Dockerfile builder with command templates, async job model): that flow is built for short-lived, stateless jobs. EchoLink needs a persistent process (an open EchoLink login session and streaming WebSocket for audio), so it doesn't fit that per-call model — use the **MCP Tool** registration (Server URL) instead, pointed at the always-on container above.
+
 ## MCP Tools
 
 | Tool | Description |
